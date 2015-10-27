@@ -6,10 +6,13 @@ fit better to Fedora packaging Guidlines.
 
 import distutils.command
 import distutils.command.bdist_rpm
+import glob
 import re
 import time
 
 DEFAULT_PYTHON_VERSION = '2'
+DOC_PATTERNS = ['AUTHOR*', 'COPYING*', 'LICENS*', 'README*']
+SPHINX_PATTERNS = ['doc', 'docs']
 
 bdist_rpm_orig = distutils.command.bdist_rpm.bdist_rpm
 class bdist_fedora (bdist_rpm_orig):
@@ -17,19 +20,29 @@ class bdist_fedora (bdist_rpm_orig):
         bdist_rpm_orig.finalize_package_data(self)
 
         # shorten description on first newline after approx 10 lines
-        cut = self.distribution.metadata.long_description.find('\n', 80*8)
-        if cut > -1:
-            self.distribution.metadata.long_description = \
-                self.distribution.metadata.long_description[:cut] + '\n...'
+        if self.distribution.metadata.long_description:
+            cut = self.distribution.metadata.long_description.find('\n', 80*8)
+            if cut > -1:
+                self.distribution.metadata.long_description = \
+                    self.distribution.metadata.long_description[:cut] + '\n...'
 
-        # requires
-        self.requires = self.requires or self._install_requires()
+        # build reqs
+        self._build_requires = self.build_requires or (
+                               self._list(getattr(self.distribution, 'setup_requires', []))
+                               + self._list(getattr(self.distribution, 'tests_require', [])))
         
-        # buildrequires
-        self.build_requires = self.build_requires or self._build_requires()
+        # requires, conflicts
+        self._requires = self.requires or \
+                         self._list(getattr(self.distribution, 'install_requires', []))
+        self._conflicts = [dep.replace('!=', '=')
+                           for dep in self._requires if '!=' in dep]
+        self._requires = [dep.replace('==', '=')
+                          for dep in self._requires if '!=' not in dep]
+        if (getattr(self.distribution, 'entry_points', None)
+            and 'setuptools' not in self._requires):
+            self._requires.append('setuptools')
 
     def _make_spec_file(self):
-        import pdb; pdb.set_trace()
         spec_file = [
             '%define upstream_name ' + self.distribution.get_name(),
             '%define version ' + self.distribution.get_version().replace('-','_'),
@@ -37,10 +50,14 @@ class bdist_fedora (bdist_rpm_orig):
             ]
 
         py_versions = self._python_versions()
-        spec_file.extend(['%bcond_' + ('without' if v in py_versions else 'with')
-                          + ' python' + v for v in ['2', '3']])
-        spec_file.append('%define sphinx_build %{?with_python2:sphinx-build}'
-                         '%{!?with_python2:sphinx-build-3}')
+        for ver in ['2', '3']:
+            enabled = 'enabled' if ver in py_versions else 'disabled'
+            opt = 'without' if ver in py_versions else 'with'
+            comment = ('# python{v} support {en} by default; rebuild with '
+                       + '"rpmbuild --{opt} python{v} ..." to change it').format(
+                        v=ver, en=enabled, opt=opt)
+            spec_file.extend([comment,
+                              '%bcond_' + opt + ' python' + ver])
 
         spec_file.extend(['',
             'Name:      python-%{upstream_name}',
@@ -72,22 +89,11 @@ class bdist_fedora (bdist_rpm_orig):
         if self.no_autoreq:
             spec_file.append('AutoReq: 0')
 
-        for field in ('Vendor',
-                      'Packager',
-                      'Requires',
-                      'Provides',
-                      'Conflicts',
-                      'Obsoletes',
-                      ):
-            val = getattr(self, field.lower())
-            if isinstance(val, list):
-                spec_file.extend(['%s: %s' % (field, v) for v in val])
-            elif val is not None:
-                spec_file.append('%s: %s' % (field, val))
+        if self.vendor:
+            spec_file.append('Vendor: ' + self.vendor)
 
-        if self.build_requires:
-            spec_file.extend(['BuildRequires: %s' % br
-                              for br in self.build_requires])
+        if self.packager:
+            spec_file.append('Packager: ' + self.packager)
 
         spec_file.extend([
             '',
@@ -95,6 +101,19 @@ class bdist_fedora (bdist_rpm_orig):
             self.distribution.get_long_description()
             ])
 
+        sphinx_dirs = [f for pat in SPHINX_PATTERNS for f in glob.glob(pat)]
+        if sphinx_dirs:
+            doc_name = 'python-%s-doc' % self.distribution.get_name()
+            descr = 'Documentation for ' + self.distribution.get_name()
+            spec_file.extend(['',
+                              '%package -n ' + doc_name,
+                              'Summary: ' + descr,
+                              '%description -n ' + doc_name,
+                              descr,
+                              '',
+                              '%define sphinx_build %{?with_python2:sphinx-build}'
+                                  '%{!?with_python2:sphinx-build-3}'
+                             ])
 
         for ver in ['2', '3']:
             ver_name = self._rpm_name(self.distribution.get_name(), ver)
@@ -106,30 +125,58 @@ class bdist_fedora (bdist_rpm_orig):
                               '',
                               '%description -n ' + ver_name,
                               self.distribution.get_long_description(),
-                              '%endif',
+                              '',
+                              'BuildRequires: ' + self._rpm_name('python-devel', ver),
                              ])
+            for dep in self._build_requires:
+                spec_file.append('BuildRequires: ' + self._rpm_dep(dep, ver,
+                                                                   DEFAULT_PYTHON_VERSION))
+            if sphinx_dirs:
+                spec_file.append('BuildRequires: ' + self._rpm_name('python-sphinx', ver,
+                                                                    DEFAULT_PYTHON_VERSION))
+            for dep in self._requires:
+                spec_file.append('Requires: ' + self._rpm_dep(dep, ver,
+                                                              DEFAULT_PYTHON_VERSION))
+            for dep in self._conflicts:
+                spec_file.append('Conflicts: ' + self._rpm_dep(dep, ver,
+                                                               DEFAULT_PYTHON_VERSION))
+            if self.provides:
+                for dep in self.provides:
+                    spec_file.append('Provides: ' + self._rpm_dep(dep, ver,
+                                                                  DEFAULT_PYTHON_VERSION))
+            if self.obsoletes:
+                for dep in self.obsoletes:
+                    spec_file.append('Obsoletes: ' + self._rpm_dep(dep, ver,
+                                                                   DEFAULT_PYTHON_VERSION))
+            spec_file.append('%endif')
 
+
+        prep_cmd =  ['%autosetup -n %{upstream_name}-%{unmangled_version}',
+                     '# Remove bundled egg-info',
+                     'rm -rf %{upstream_name}.egg-info',
+                    ]
         build_cmd = ['%if %{with python2}',
                      '  %{py2_build}',
                      '%endif',
                      '%if %{with python3}',
                      '  %{py3_build}',
                      '%endif',
-                     'for i in doc docs ; do',
-                     '  [ -d "$i" ] && %{sphinx_build} "$i" html',
-                     'done',
                     ]
-        install_cmd = ['%if %{with python2}',
-                       '  %{py2_install}',
+        if sphinx_dirs:
+            build_cmd.extend(['%{sphinx_build} ' + dir + ' html' for dir in sphinx_dirs])
+            build_cmd.append('rm -rf html/.{doctrees,buildinfo}')
+
+        install_cmd = ['%if %{with python3}',
+                       '  %{py3_install \--record=.python3-installfiles.txt}',
                        '%endif',
-                       '%if %{with python3}',
-                       '  %{py3_install}',
+                       '%if %{with python2}',
+                       '  %{py2_install \--record=.python2-installfiles.txt}',
                        '%endif',
                      ]
 
 
         script_options = [
-            ('prep', 'prep_script', "%autosetup -n %{upstream_name}-%{unmangled_version}"),
+            ('prep', 'prep_script', prep_cmd),
             ('build', 'build_script', build_cmd),
             ('install', 'install_script', install_cmd),
             ('clean', 'clean_script', "rm -rf $RPM_BUILD_ROOT"),
@@ -155,19 +202,23 @@ class bdist_fedora (bdist_rpm_orig):
                 else:
                     spec_file.append(default)
 
+        if sphinx_dirs:
+            spec_file.extend(['',
+                              '%files -n ' + doc_name,
+                              '%defattr(-,root,root)',
+                              '%doc html',
+                             ])
+
+        doc_files = [f for pat in DOC_PATTERNS for f in glob.glob(pat)]
         for ver in ['2','3']:
             ver_name = self._rpm_name(self.distribution.get_name(), ver)
-            sitearch = '%{python' + ver + '_sitearch}/%{upstream_name}'
             spec_file.extend(['',
                               '%if %{with python' + ver + '}',
-                              '%files -n ' + ver_name,
+                              '%files -n ' + ver_name + ' -f .python' + ver + '-installfiles.txt',
                               '%defattr(-,root,root)',
-                              sitearch,
-                              sitearch + '-%{version}-py?.?.egg-info',
-                              '%endif',
+                              '%doc ' + ' '.join(doc_files),
                              ])
-            if self.doc_files:
-                spec.append('%doc ' + ' '.join(self.doc_files))
+            spec_file.append('%endif')
 
         # changelog
         spec_file.extend(['', '%changelog'])
@@ -207,19 +258,9 @@ class bdist_fedora (bdist_rpm_orig):
             pyversion = ''
         return 'python%s-%s' % (pyversion, name)
 
-    def _install_requires(self):
-        install_requires = self.distribution.install_requires or []
-        if (self.distribution.entry_points
-            and 'setuptools' not in install_requires):
-            install_requires.append('setuptools')
-        return install_requires
-
-    def _build_requires(self):
-        build = self.distribution.setup_requires or []
-        if 'setuptools' in build:
-            build.remove('setuptools')
-        test = self.distribution.tests_require or []
-        return build + test
+    def _rpm_dep(self, dep, pyversion, default=None):
+        m = re.match(r'([^<=>]*)(.*)', dep)
+        return self._rpm_name(m.group(1), pyversion, default) + m.group(2)
 
     def _get_license(self):
         return self.distribution.get_license()
@@ -227,7 +268,7 @@ class bdist_fedora (bdist_rpm_orig):
     def _python_versions(self):
         """ Find python version from classifiers."""
         versions = set()
-        for classifier in self.distribution.metadata.classifiers:
+        for classifier in self._list(self.distribution.metadata.classifiers):
             if classifier.startswith('Programming Language :: Python ::'):
                 ver = classifier.split('::')[-1]
                 major = ver.split('.')[0].strip()
@@ -236,6 +277,15 @@ class bdist_fedora (bdist_rpm_orig):
         if not versions:
             versions = set(DEFAULT_PYTHON_VERSION)
         return sorted(versions)
+
+    @staticmethod
+    def _list(var):
+        if var is None:
+            return []
+        elif not isinstance(var, list):
+            raise DistutilsOptionError, "%s is not a list" % var
+        return var
+
 
 distutils.command.bdist_rpm.bdist_rpm = bdist_fedora
 
