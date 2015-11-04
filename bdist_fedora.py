@@ -122,11 +122,11 @@ class bdist_fedora (bdist_rpm_orig):
                               '%package -n ' + ver_name,
                               'Summary: ' + self.distribution.get_description(),
                               '%{?python_provide:%python_provide ' + ver_name + '}',
+                              'BuildRequires: ' + self._rpm_name('python-devel', ver),
                               '',
                               '%description -n ' + ver_name,
                               self.distribution.get_long_description(),
                               '',
-                              'BuildRequires: ' + self._rpm_name('python-devel', ver),
                              ])
             for dep in self._build_requires:
                 spec_file.append('BuildRequires: ' + self._rpm_dep(dep, ver,
@@ -289,17 +289,23 @@ class bdist_fedora (bdist_rpm_orig):
 
 distutils.command.bdist_rpm.bdist_rpm = bdist_fedora
 
-if __name__ == '__main__':
+def run_setup(setup, *args):
     import os.path
     import runpy
     import sys
 
+    dirname = os.path.dirname(setup)
+    filename = os.path.basename(setup)
+    if filename.endswith('.py'):
+        filename = filename[:-3]
+    sys.path.insert(0, dirname)
+    sys.argv[1:] = args
+    runpy.run_module(filename, run_name='__main__', alter_sys=True)
+
+if __name__ == '__main__':
     # run script given as a first argument
     del sys.argv[0]     # remove ourselves from argument list
 
     setup = sys.argv[0]
-    if setup.endswith('.py'):
-        setup = setup[:-3]
-    sys.path.insert(0, os.path.dirname(setup))
-    runpy.run_module(setup, run_name='__main__', alter_sys=True)
+    run_setup(setup, sys.argv[1:])
 
