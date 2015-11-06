@@ -123,10 +123,6 @@ class bdist_fedora (bdist_rpm_orig):
                               'Summary: ' + self.distribution.get_description(),
                               '%{?python_provide:%python_provide ' + ver_name + '}',
                               'BuildRequires: ' + self._rpm_name('python-devel', ver),
-                              '',
-                              '%description -n ' + ver_name,
-                              self.distribution.get_long_description(),
-                              '',
                              ])
             for dep in self._build_requires:
                 spec_file.append('BuildRequires: ' + self._rpm_dep(dep, ver,
@@ -148,6 +144,11 @@ class bdist_fedora (bdist_rpm_orig):
                 for dep in self.obsoletes:
                     spec_file.append('Obsoletes: ' + self._rpm_dep(dep, ver,
                                                                    DEFAULT_PYTHON_VERSION))
+            spec_file.extend(['',
+                              '%description -n ' + ver_name,
+                              self.distribution.get_long_description(),
+                              '',
+                             ])
             spec_file.append('%endif')
 
 
