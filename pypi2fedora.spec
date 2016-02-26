@@ -1,5 +1,5 @@
 Name:		pypi2fedora
-Version:	0.9.0
+Version:	0.9.1
 Release:	1%{?dist}
 Summary:	Convert PyPI packages to srpm suitable for Fedora COPR
 
@@ -36,4 +36,7 @@ cp -a modules/pypi2fedora %{buildroot}%{python3_sitelib}
 
 
 %changelog
+* Fri Feb 26 2016 Michael Mraka <michael.mraka@redhat.com> 0.9.1-1
+- initial rpm build
+
 
