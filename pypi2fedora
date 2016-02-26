@@ -1,18 +1,38 @@
+#!/usr/bin/python3
+
 from setuptools import archive_util
 
+import argparse
 import glob
 import os
 import pip
 import shutil
 import sys
 import tempfile
-import bdist_fedora
+
+def run_setup(setup, *args):
+    import os.path
+    import runpy
+    import sys
+
+    dirname = os.path.dirname(setup)
+    filename = os.path.basename(setup)
+    if filename.endswith('.py'):
+        filename = filename[:-3]
+    sys.path.insert(0, dirname)
+    sys.argv[1:] = args
+    runpy.run_module(filename, run_name='__main__', alter_sys=True)
 
 if __name__ == '__main__':
-    package_name = sys.argv[1]
 
-    curdir = os.getcwd()
-    temp = tempfile.mkdtemp(prefix='pipeline.')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('package', 
+        help='a PyPI package spec')
+    parser.add_argument('-d', '--destdir', default=os.getcwd(),
+                   help='destination directory for srpm (default is current dir)')
+    args = parser.parse_args()
+
+    temp = tempfile.mkdtemp(prefix='pypi2fedora.')
     tempdir = {}
 
     try:
@@ -20,7 +40,7 @@ if __name__ == '__main__':
             tempdir[d] = os.path.join(temp, d)
             os.mkdir(tempdir[d])
         pip.main(['install', '--disable-pip-version-check', '--no-deps', '--download',
-                  tempdir['source'], package_name])
+                  tempdir['source'], args.package])
 
         try:
             package_sources = glob.glob(os.path.join(tempdir['source'], '*'))[0]
@@ -37,8 +57,8 @@ if __name__ == '__main__':
             raise SystemExit(3)
 
         os.chdir(os.path.dirname(setup_py))
-        bdist_fedora.run_setup(setup_py, 'bdist_rpm', '--source', '--quiet',
-                               '--dist-dir', curdir)
+        run_setup(setup_py, '--command-packages', 'pypi2fedora', 'bdist_fedora', '--source', '--quiet',
+                               '--dist-dir', args.destdir)
 
     finally:
         shutil.rmtree(temp)

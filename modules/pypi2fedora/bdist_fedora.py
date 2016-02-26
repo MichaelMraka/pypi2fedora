@@ -4,8 +4,7 @@ distributions) to be able of automatic rebuild in Fedora's COPR and
 fit better to Fedora packaging Guidlines.
 """
 
-import distutils.command
-import distutils.command.bdist_rpm
+from distutils.command import bdist_rpm
 import glob
 import re
 import time
@@ -14,10 +13,9 @@ DEFAULT_PYTHON_VERSION = '2'
 DOC_PATTERNS = ['AUTHOR*', 'COPYING*', 'LICENS*', 'README*']
 SPHINX_PATTERNS = ['doc', 'docs']
 
-bdist_rpm_orig = distutils.command.bdist_rpm.bdist_rpm
-class bdist_fedora (bdist_rpm_orig):
+class bdist_fedora(bdist_rpm.bdist_rpm):
     def finalize_package_data (self):
-        bdist_rpm_orig.finalize_package_data(self)
+        bdist_rpm.bdist_rpm.finalize_package_data(self)
 
         # shorten description on first newline after approx 10 lines
         if self.distribution.metadata.long_description:
@@ -284,29 +282,5 @@ class bdist_fedora (bdist_rpm_orig):
         if var is None:
             return []
         elif not isinstance(var, list):
-            raise DistutilsOptionError, "%s is not a list" % var
+            raise DistutilsOptionError("%s is not a list" % var)
         return var
-
-
-distutils.command.bdist_rpm.bdist_rpm = bdist_fedora
-
-def run_setup(setup, *args):
-    import os.path
-    import runpy
-    import sys
-
-    dirname = os.path.dirname(setup)
-    filename = os.path.basename(setup)
-    if filename.endswith('.py'):
-        filename = filename[:-3]
-    sys.path.insert(0, dirname)
-    sys.argv[1:] = args
-    runpy.run_module(filename, run_name='__main__', alter_sys=True)
-
-if __name__ == '__main__':
-    # run script given as a first argument
-    del sys.argv[0]     # remove ourselves from argument list
-
-    setup = sys.argv[0]
-    run_setup(setup, sys.argv[1:])
-
